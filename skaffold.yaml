@@ -1,0 +1,38 @@
+apiVersion: skaffold/v3
+kind: Config
+metadata:
+  name: stt-proxy-server
+
+# Define a base Helm release as an anchor
+deploy:
+  helm:
+    releases:
+      - &baseRelease
+        name: stt-proxy-server
+        remoteChart: oci://asia-south1-docker.pkg.dev/prj-c-cloudbuild-lk57/helm-base/backend-chart
+        version: 0.2.2
+        valuesFiles:
+          - values/dev.yaml
+        namespace: instant
+        setValues:
+          deployments.sttproxyserver.containers[0].image.repository: imageurl
+          deployments.sttproxyserver.containers[0].image.tag: latest
+
+profiles:
+  - name: dev
+    deploy:
+      helm:
+        releases:
+          - <<: *baseRelease
+            valuesFiles:
+              - values/dev.yaml
+            wait: true
+  - name: prod
+    deploy:
+      helm:
+        releases:
+          - <<: *baseRelease
+            valuesFiles:
+              - values/prod.yaml
+
+# Last updated by bootstrap workflow: 2026-03-10T11:55:32Z

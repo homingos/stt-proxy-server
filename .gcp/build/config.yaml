@@ -1,0 +1,368 @@
+steps:
+  # Detecting branch
+  - name: "alpine/git"
+    id: detect-branch
+    secretEnv: ["SSH_KEY"]
+    entrypoint: "ash"
+    args:
+      - -c
+      - |
+        mkdir -p /root/.ssh
+        echo "$$SSH_KEY" > /root/.ssh/id_rsa
+        chmod 400 /root/.ssh/id_rsa
+        ssh-keyscan github.com > /root/.ssh/known_hosts
+
+        git fetch origin
+        if [[ "$BRANCH_NAME" == hotfix* ]]; then
+          echo "HOTFIX_BRANCH=true" >> /workspace/branch_flags.txt
+        else
+          echo "HOTFIX_BRANCH=false" >> /workspace/branch_flags.txt
+        fi
+        echo "Current branch: $BRANCH_NAME"
+        cat /workspace/branch_flags.txt
+
+  - name: "alpine/git"
+    id: check-commit-msg-and-merge
+    secretEnv: ["SSH_KEY"]
+    entrypoint: "ash"
+    args:
+      - -c
+      - |
+        mkdir -p /root/.ssh
+        echo "$$SSH_KEY" > /root/.ssh/id_rsa
+        chmod 400 /root/.ssh/id_rsa
+        ssh-keyscan github.com > /root/.ssh/known_hosts
+
+        git fetch --unshallow origin production || git fetch origin production
+        git checkout production
+
+        COMMIT_MSG=$(git log -1 --pretty=%B)
+        echo "Last commit message: $$COMMIT_MSG"
+        if [ "$$COMMIT_MSG" = "This signifies a hotfix deployment" ]; then
+          echo "_HOTFIX_COMMIT=nonprod" >> /workspace/commit_flags.txt
+        elif [ "$$COMMIT_MSG" = "This signifies a prod hotfix deployment" ]; then
+          echo "_HOTFIX_COMMIT=prod" >> /workspace/commit_flags.txt
+        else
+          echo "_HOTFIX_COMMIT=false" >> /workspace/commit_flags.txt
+        fi
+        cat /workspace/commit_flags.txt
+
+  - name: "alpine/git"
+    secretEnv: ["SSH_KEY"]
+    entrypoint: "ash"
+    args:
+      - -c
+      - |
+        mkdir -p /root/.ssh
+        echo "$$SSH_KEY" >> /root/.ssh/id_rsa
+        echo "$$SSH_KEY" >> /workspace/id_rsa
+        chmod 400 /root/.ssh/id_rsa
+        ssh-keyscan github.com > /root/.ssh/known_hosts
+        git config --global --add url."git@github.com:".insteadOf "https://github.com/"
+        git remote set-url origin git@github.com:homingos/$REPO_NAME.git
+        git submodule update --init
+        git lfs install
+        git lfs pull
+
+  - name: "alpine/git"
+    id: check-diff
+    secretEnv: ["SSH_KEY"]
+    entrypoint: "ash"
+    args:
+      - -c
+      - |
+        mkdir -p /root/.ssh
+        echo "$$SSH_KEY" > /root/.ssh/id_rsa
+        chmod 400 /root/.ssh/id_rsa
+        ssh-keyscan github.com > /root/.ssh/known_hosts
+
+        git fetch --unshallow origin production || git fetch origin production
+        git checkout production
+        echo "Checking git diff inside the same repo..."
+        CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+        echo $$CHANGED_FILES
+
+        TOTAL_CHANGES=$(echo "$$CHANGED_FILES" | wc -l)
+        SKAFOLD_CONFIG_CHANGES=$(echo "$$CHANGED_FILES" | grep -c -e "^skaffold.yaml$" -e "^.gcp/build/config.yaml$")
+        HOTFIX_BRANCH=$(cat /workspace/branch_flags.txt | cut -d= -f2)
+
+        # Set _SKIP_BUILD flag
+        if [ -z "$$CHANGED_FILES" ] && [  "$$HOTFIX_BRANCH" = "false" ]; then
+          # Empty commit
+          echo "_SKIP_BUILD=true" >> /workspace/skip_build.txt
+        elif [ "$$TOTAL_CHANGES" -eq "$$SKAFOLD_CONFIG_CHANGES" ] && [  "$$HOTFIX_BRANCH" = "false" ]; then
+          # Only skaffold.yaml or config.yaml changed (no other files)
+          echo "_SKIP_BUILD=true" >> /workspace/skip_build.txt
+        else
+          # Other files changed (with or without skaffold/config changes)
+          echo "_SKIP_BUILD=false" >> /workspace/skip_build.txt
+        fi
+
+        echo "Changed files: \"$$CHANGED_FILES\""
+        echo "Hotfix branch: $$HOTFIX_BRANCH"
+        echo "Total changes: $$TOTAL_CHANGES"
+        echo "Skaffold/config changes: $$SKAFOLD_CONFIG_CHANGES"
+      
+  #Skip build if no changes
+  - name: "gcr.io/cloud-builders/docker"
+    entrypoint: "bash"
+    args:
+      - -c
+      - |
+        SKIP_BUILD=$(cat /workspace/skip_build.txt | cut -d= -f2)
+        if [ "$$SKIP_BUILD" = "true" ]; then
+          echo "Skipping image build due to skip-build flag"
+        elif [ "$$HOTFIX_COMMIT" = "nonprod" ] || [ "$$HOTFIX_COMMIT" = "prod" ]; then
+          echo "Skipping img build due to infra hotfix commit"
+        else
+          docker build -f .docker/Dockerfile -t asia-south1-docker.pkg.dev/$PROJECT_ID/homingos/$REPO_NAME:$COMMIT_SHA .
+        fi
+
+  - name: "gcr.io/cloud-builders/docker"
+    entrypoint: "bash"
+    args:
+      - -c
+      - |
+        SKIP_BUILD=$(cat /workspace/skip_build.txt | cut -d= -f2)
+        if [ "$$SKIP_BUILD" = "true" ] || [ "$$HOTFIX_COMMIT" = "prod" ] || [ "$$HOTFIX_COMMIT" = "nonprod" ]; then
+          echo "Skipping image push step"
+          exit 0
+        fi
+        docker push asia-south1-docker.pkg.dev/$PROJECT_ID/homingos/$REPO_NAME:$COMMIT_SHA
+
+  - name: "alpine/git"
+    secretEnv: ["SSH_KEY"]
+    entrypoint: "ash"
+    args:
+      - -c
+      - |
+        mkdir -p /root/.ssh
+        echo "$$SSH_KEY" > /root/.ssh/id_rsa
+        chmod 400 /root/.ssh/id_rsa
+        ssh-keyscan github.com > /root/.ssh/known_hosts
+        git clone git@github.com:homingos/service-helm-values.git /workspace/helm
+        cp -r /workspace/helm/$REPO_NAME/values /workspace/values
+        cd /workspace/values
+        ls
+  
+  # Sync secrets from berglas .env files to Kubernetes SecretObjects
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: sync-k8s-secrets
+    entrypoint: "bash"
+    args:
+      - -c
+      - |
+        echo "Syncing secrets from berglas .env files to Kubernetes SecretObjects..."
+        
+        # Install required tools
+        apt-get update && apt-get install -y curl wget jq
+        wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+        chmod +x /usr/local/bin/yq
+        
+        # Download berglas using GitHub API to get correct asset URL
+        BERGLAS_ASSET_URL=$$(curl -s https://api.github.com/repos/GoogleCloudPlatform/berglas/releases/latest | jq -r '.assets[] | select(.name | test("linux.*amd64.*tar.gz")) | .browser_download_url' | head -1)
+        echo "Downloading berglas from: $$BERGLAS_ASSET_URL"
+        if [ -z "$$BERGLAS_ASSET_URL" ] || [ "$$BERGLAS_ASSET_URL" = "null" ]; then
+          echo "Error: Could not find berglas linux amd64 release asset"
+          exit 1
+        fi
+        curl -sL "$$BERGLAS_ASSET_URL" | tar -xz -C /usr/local/bin berglas
+        chmod +x /usr/local/bin/berglas
+        
+        # Verify berglas is working
+        if ! /usr/local/bin/berglas --version; then
+          echo "Error: Failed to install berglas correctly"
+          exit 1
+        fi
+        
+        # Determine environment from flags
+        _HOTFIX_COMMIT=$(cat /workspace/commit_flags.txt | cut -d= -f2)
+        HOTFIX_BRANCH=$(cat /workspace/branch_flags.txt | cut -d= -f2)
+        
+        if [ "$$_HOTFIX_COMMIT" = "nonprod" ]; then
+          ENV="nonprod"
+        elif [ "$$_HOTFIX_COMMIT" = "prod" ] || [ "$$HOTFIX_BRANCH" = "true" ]; then
+          ENV="prod"
+        else
+          ENV="dev"
+        fi
+        
+        echo "Environment determined: $$ENV"
+        
+        # Check if secrets config file exists
+        SECRETS_CONFIG=".gcp/secrets-config.yaml"
+        if [ ! -f "$$SECRETS_CONFIG" ]; then
+          echo "Warning: Secrets config file $$SECRETS_CONFIG not found. Skipping secret sync."
+          exit 0
+        fi
+        
+        # Get environment-specific configuration
+        TARGET_PROJECT_ID=$(yq ".environments.$$ENV.project_id" $$SECRETS_CONFIG)
+        NAMESPACE=$(yq ".environments.$$ENV.namespace" $$SECRETS_CONFIG)
+        
+        if [ -z "$$TARGET_PROJECT_ID" ] || [ "$$TARGET_PROJECT_ID" = "null" ]; then
+          echo "Error: No configuration found for environment: $$ENV"
+          exit 1
+        fi
+        
+        echo "Target project: $$TARGET_PROJECT_ID"
+        echo "Namespace: $$NAMESPACE"
+        
+        # Set GCP project context
+        gcloud config set project $$TARGET_PROJECT_ID
+        
+        # Get GKE cluster name and location from config file
+        CLUSTER_NAME=$(yq ".clusters.$$ENV.name" $$SECRETS_CONFIG)
+        CLUSTER_LOCATION=$(yq ".clusters.$$ENV.location" $$SECRETS_CONFIG)
+        
+        if [ -z "$$CLUSTER_NAME" ] || [ "$$CLUSTER_NAME" = "null" ]; then
+          echo "Warning: No cluster configuration found for environment: $$ENV. Skipping K8s secret creation."
+          exit 0
+        fi
+        
+        echo "Cluster: $$CLUSTER_NAME in $$CLUSTER_LOCATION"
+        
+        # Get GKE credentials
+        if ! gcloud container clusters get-credentials $$CLUSTER_NAME --location=$$CLUSTER_LOCATION --project=$$TARGET_PROJECT_ID; then
+          echo "Warning: Could not get GKE credentials. Skipping K8s secret creation."
+          exit 0
+        fi
+        
+        # Get berglas bucket from config
+        BERGLAS_BUCKET=$(yq ".berglas.bucket" $$SECRETS_CONFIG)
+        
+        # Process each secret configuration
+        SECRET_COUNT=$(yq ".environments.$$ENV.secrets | length" $$SECRETS_CONFIG)
+        
+        for i in $(seq 0 $$((SECRET_COUNT - 1))); do
+          SECRET_TYPE=$(yq ".environments.$$ENV.secrets[$$i].secret_type // \"Opaque\"" $$SECRETS_CONFIG)
+          
+          # Generate berglas secret name from repo name and environment
+          BERGLAS_SECRET="$$BERGLAS_BUCKET/$REPO_NAME-$$ENV-env"
+          
+          # Generate K8s secret name from repo name and environment
+          K8S_SECRET_NAME="$REPO_NAME-$$ENV-secrets"
+          
+          echo "Processing secret: $$K8S_SECRET_NAME from berglas: $$BERGLAS_SECRET"
+          
+          # Retrieve .env file from berglas
+          TEMP_ENV_FILE="/tmp/env-$$i.txt"
+          if ! berglas access "$$BERGLAS_SECRET" > $$TEMP_ENV_FILE; then
+            echo "Error: Failed to retrieve secret from berglas: $$BERGLAS_SECRET"
+            continue
+          fi
+          
+          # Parse .env file and create K8s secret
+          # Handle both formats: KEY=VALUE and export KEY='VALUE'
+          TEMP_K8S_SECRET="/tmp/k8s-secret-$$i.yaml"
+          
+          # Start building the K8s secret YAML
+          printf 'apiVersion: v1\n' > $$TEMP_K8S_SECRET
+          printf 'kind: Secret\n' >> $$TEMP_K8S_SECRET
+          printf 'metadata:\n' >> $$TEMP_K8S_SECRET
+          printf '  name: %s\n' "$$K8S_SECRET_NAME" >> $$TEMP_K8S_SECRET
+          printf '  namespace: %s\n' "$$NAMESPACE" >> $$TEMP_K8S_SECRET
+          printf 'type: %s\n' "$$SECRET_TYPE" >> $$TEMP_K8S_SECRET
+          printf 'data:\n' >> $$TEMP_K8S_SECRET
+          
+          # Parse .env file line by line
+          while IFS= read -r line || [ -n "$$line" ]; do
+            # Skip empty lines and comments
+            [[ -z "$$line" || "$$line" =~ ^[[:space:]]*# ]] && continue
+            
+            # Remove 'export ' prefix if present
+            line=$${line#export }
+            
+            # Extract key and value
+            if [[ "$$line" =~ ^([^=]+)=(.*)$ ]]; then
+              KEY="$${BASH_REMATCH[1]}"
+              VALUE="$${BASH_REMATCH[2]}"
+              
+              # Remove quotes from value (handles 'value', "value", 'value', "value")
+              VALUE=$${VALUE#\'}
+              VALUE=$${VALUE%\'}
+              VALUE=$${VALUE#\"}
+              VALUE=$${VALUE%\"}
+              
+              # Keep original key name for environment variables
+              K8S_KEY="$$KEY"
+              
+              # Base64 encode the value for K8s secret
+              ENCODED_VALUE=$$(echo -n "$$VALUE" | base64 -w 0)
+              
+              # Append to K8s secret YAML
+              echo "  $$K8S_KEY: $$ENCODED_VALUE" >> $$TEMP_K8S_SECRET
+            fi
+          done < $$TEMP_ENV_FILE
+          
+          # Apply the K8s secret (create or update)
+          if kubectl apply -f $$TEMP_K8S_SECRET; then
+            echo "✓ Successfully created/updated K8s secret: $$K8S_SECRET_NAME in namespace $$NAMESPACE"
+          else
+            echo "✗ Failed to create/update K8s secret: $$K8S_SECRET_NAME"
+            exit 1
+          fi
+          
+          # Clean up temporary files
+          rm -f $$TEMP_ENV_FILE $$TEMP_K8S_SECRET
+        done
+        
+        echo "Secret sync to Kubernetes completed for environment: $$ENV"
+  
+  #Get the latest image tag from artifact registry
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: get-latest-image-tag
+    entrypoint: "bash"
+    args:
+      - -c
+      - |
+        echo "Fetching the latest image tag from Artifact Registry..."
+        _LATEST_IMAGE_TAG=$(gcloud artifacts docker images list asia-south1-docker.pkg.dev/$PROJECT_ID/homingos/$REPO_NAME --sort-by=~CREATE_TIME --limit=1 --format="value(tags[0])" --include-tags)
+        echo $$_LATEST_IMAGE_TAG
+        echo "_LATEST_IMAGE_TAG=$$_LATEST_IMAGE_TAG" >> /workspace/latest_image_tag.txt
+        cat /workspace/latest_image_tag.txt
+      
+  #Use the latest image tag while creating cloud deploy release
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: create-release
+    entrypoint: "bash"
+    args:
+      - -c
+      - |
+        echo "Creating Cloud Deploy release..."
+        _LATEST_IMAGE_TAG=$(cat /workspace/latest_image_tag.txt | cut -d= -f2)
+        echo "Latest image tag: $$_LATEST_IMAGE_TAG"
+        
+        # Determine which pipeline to use
+        _HOTFIX_COMMIT=$(cat /workspace/commit_flags.txt | cut -d= -f2)
+        HOTFIX_BRANCH=$(cat /workspace/branch_flags.txt | cut -d= -f2)
+        echo $$HOTFIX_BRANCH
+        if [ "$$_HOTFIX_COMMIT" = "nonprod" ]; then
+          _PIPELINE_NAME="fi-hotfix-pipeline"
+          echo "Hotfix commit detected. Using pipeline: $$_PIPELINE_NAME"
+        elif [  "$$_HOTFIX_COMMIT" = "prod" ] || [  "$$HOTFIX_BRANCH" = "true"  ]; then
+          _PIPELINE_NAME="fi-hotfix-direct-prod-pipeline"
+          echo "Using hotfix prod pipeline: $$_PIPELINE_NAME"
+        else
+          _PIPELINE_NAME="$_DEPLOYMENT_PIPELINE_NAME"
+          echo "Using default pipeline: $$_PIPELINE_NAME"
+        fi
+
+        gcloud auth configure-docker asia-south1-docker.pkg.dev --quiet
+        gcloud deploy releases create release-$SHORT_SHA \
+        --project=prj-c-cloudbuild-lk57 \
+        --region=asia-south1 \
+        --delivery-pipeline=$$_PIPELINE_NAME \
+        --annotations="triggered_by=cloudbuild" \
+        --images=imageurl=asia-south1-docker.pkg.dev/$PROJECT_ID/homingos/$REPO_NAME:$$_LATEST_IMAGE_TAG
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+availableSecrets:
+  secretManager:
+    - versionName: projects/$PROJECT_ID/secrets/SSH_KEY/versions/latest
+      env: "SSH_KEY"
+
+# Last updated by bootstrap workflow: 2026-02-17T12:27:10Z
+
+# Last updated by bootstrap workflow: 2026-03-10T11:55:32Z
