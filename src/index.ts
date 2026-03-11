@@ -1,3 +1,4 @@
+import http from "http";
 import WebSocket, { WebSocketServer } from "ws";
 import speech, { protos } from "@google-cloud/speech";
 
@@ -46,9 +47,22 @@ function createRecognizeStream(ws: WebSocket) {
         });
 }
 
-// ─── WebSocket Server ──────────────────────────────────────────────────────
-const wss = new WebSocketServer({ port: PORT });
-console.log(`[Proxy] Listening on ws://localhost:${PORT}`);
+// ─── HTTP & WebSocket Server ────────────────────────────────────────────────
+const server = http.createServer((req, res) => {
+    if (req.url === "/stt-proxy-server/health" || req.url === "/health") {
+        res.writeHead(200, { "Content-Type": "text/plain" });
+        res.end("OK");
+        return;
+    }
+    res.writeHead(404);
+    res.end();
+});
+
+const wss = new WebSocketServer({ server });
+
+server.listen(PORT, () => {
+    console.log(`[Proxy] Listening on port ${PORT}`);
+});
 
 wss.on("connection", (ws: WebSocket) => {
     console.log("[Proxy] Browser connected");
