@@ -8,16 +8,22 @@ const STREAMING_CONFIG: protos.google.cloud.speech.v1.IStreamingRecognitionConfi
     config: {
         encoding: "LINEAR16",
         sampleRateHertz: 16000,
-        languageCode: "en-IN",
         model: "latest_long",
+        useEnhanced: true,
+        languageCode: "en-IN",
+        alternativeLanguageCodes: ["en-US", "en-GB", "en-AU"],
         enableAutomaticPunctuation: false,
     },
     interimResults: true,
 };
 
+const STREAMING_LIMIT_MS = 240 * 1000;
+const OVERLAP_MS = 2000;
+const SILENCE_INTERVAL_MS = 200;
+const SILENCE_BYTES = 16000 * 2 * (SILENCE_INTERVAL_MS / 1000); // 6400 bytes
+
 const speechClient = new speech.SpeechClient();
 
-// ─── Helper: create a fresh gRPC recognize stream ──────────────────────────
 function createRecognizeStream(ws: WebSocket) {
     return speechClient
         .streamingRecognize(STREAMING_CONFIG)
@@ -27,13 +33,14 @@ function createRecognizeStream(ws: WebSocket) {
 
             const transcript = result.alternatives?.[0]?.transcript ?? "";
             const isFinal = result.isFinal ?? false;
+            const languageCode = result.languageCode ?? "";
 
             if (!transcript) return;
 
-            console.log(`[Proxy] Transcript: "${transcript}" (final: ${isFinal})`);
+            console.log(`[Proxy] Transcript: "${transcript}" (final: ${isFinal}, lang: ${languageCode})`);
 
             if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ transcript, isFinal }));
+                ws.send(JSON.stringify({ transcript, isFinal, languageCode }));
             }
         })
         .on("error", (err: Error) => {
@@ -47,7 +54,6 @@ function createRecognizeStream(ws: WebSocket) {
         });
 }
 
-// ─── HTTP & WebSocket Server ────────────────────────────────────────────────
 const server = http.createServer((req, res) => {
     if (req.url === "/stt-proxy-server/health" || req.url === "/health") {
         res.writeHead(200, { "Content-Type": "text/plain" });
@@ -61,90 +67,89 @@ const server = http.createServer((req, res) => {
 const wss = new WebSocketServer({ server });
 
 server.listen(PORT, () => {
-    console.log(`[Proxy] Updated Listening on port ${PORT}`);
+    console.log(`[Proxy] Listening on port ${PORT}`);
 });
 
-wss.on("connection", (ws: WebSocket) => {
-    console.log("[Proxy] Browser connected");
+wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
+    const ip = req.headers["x-forwarded-for"] || req.socket.remoteAddress || "unknown";
+    const userAgent = req.headers["user-agent"] || "unknown";
+    const device = /iPhone|iPad|iPod/i.test(userAgent)
+        ? "iOS"
+        : /Android/i.test(userAgent)
+            ? "Android"
+            : "Web Browser";
+
+    console.log(`[Proxy] Client connected — device: ${device}, ip: ${ip}, ua: ${userAgent}`);
 
     let recognizeStream: ReturnType<typeof createRecognizeStream> | null = null;
     let silenceInterval: NodeJS.Timeout | null = null;
     let streamRestartTimeout: NodeJS.Timeout | null = null;
     let lastAudioTime = Date.now();
 
-    // Limit stream to 290 seconds (Google's max is 305s) to avoid ungraceful disconnects
-    const STREAMING_LIMIT_MS = 290 * 1000;
+    function scheduleStreamRestart() {
+        if (streamRestartTimeout) clearTimeout(streamRestartTimeout);
+        streamRestartTimeout = setTimeout(() => {
+            console.log("[Proxy] Proactive stream restart (overlap window)");
+
+            const oldStream = recognizeStream;
+            recognizeStream = null;
+
+            // Warm up new stream before killing old
+            getOrCreateStream();
+
+            setTimeout(() => {
+                if (oldStream && !oldStream.destroyed) {
+                    oldStream.end();
+                }
+            }, OVERLAP_MS);
+        }, STREAMING_LIMIT_MS);
+    }
 
     function getOrCreateStream() {
         if (!recognizeStream || recognizeStream.destroyed) {
             recognizeStream = createRecognizeStream(ws);
-
-            // Restart timer for endless streaming
-            if (streamRestartTimeout) clearTimeout(streamRestartTimeout);
-            streamRestartTimeout = setTimeout(() => {
-                console.log("[Proxy] 290s limit reached. Seamlessly restarting gRPC stream.");
-                if (recognizeStream && !recognizeStream.destroyed) {
-                    recognizeStream.end();
-                }
-                recognizeStream = null;
-                getOrCreateStream(); // Spin up new stream immediately
-            }, STREAMING_LIMIT_MS);
+            scheduleStreamRestart();
         }
         return recognizeStream;
     }
 
-    // Start sending silence to keep stream alive if we haven't received audio recently
     function startSilenceGenerator() {
         if (silenceInterval) return;
         silenceInterval = setInterval(() => {
-            if (Date.now() - lastAudioTime >= 2000) {
-                // Send 100ms of empty 16-bit PCM audio (16000 Hz = 1600 samples = 3200 bytes)
-                const silence = Buffer.alloc(3200, 0);
-                if (recognizeStream && recognizeStream.writable && !recognizeStream.destroyed) {
+            if (Date.now() - lastAudioTime >= 1500) {
+                const silence = Buffer.alloc(SILENCE_BYTES, 0);
+                if (recognizeStream?.writable && !recognizeStream.destroyed) {
                     recognizeStream.write(silence);
                 }
             }
-        }, 1000);
+        }, SILENCE_INTERVAL_MS);
     }
 
     function stopTimers() {
-        if (silenceInterval) {
-            clearInterval(silenceInterval);
-            silenceInterval = null;
-        }
-        if (streamRestartTimeout) {
-            clearTimeout(streamRestartTimeout);
-            streamRestartTimeout = null;
-        }
+        if (silenceInterval) { clearInterval(silenceInterval); silenceInterval = null; }
+        if (streamRestartTimeout) { clearTimeout(streamRestartTimeout); streamRestartTimeout = null; }
     }
 
-    // Initialize the stream and silence generator as soon as they connect
     getOrCreateStream();
     startSilenceGenerator();
 
     ws.on("message", (data: WebSocket.RawData) => {
-        // JSON control message (e.g. commit signal)
         if (!Buffer.isBuffer(data)) {
             try {
                 const msg = JSON.parse(data.toString());
                 if (msg.type === "commit") {
-                    console.log("[Proxy] Commit received — flushing gRPC stream");
-                    if (recognizeStream && !recognizeStream.destroyed) recognizeStream.end();
+                    console.log("[Proxy] Commit — flushing stream");
+                    const oldStream = recognizeStream;
                     recognizeStream = null;
-                    if (streamRestartTimeout) {
-                        clearTimeout(streamRestartTimeout);
-                        streamRestartTimeout = null;
-                    }
-                    getOrCreateStream(); // eagerly recreate so it's warm
+                    if (streamRestartTimeout) { clearTimeout(streamRestartTimeout); streamRestartTimeout = null; }
+                    if (oldStream && !oldStream.destroyed) oldStream.end();
+                    getOrCreateStream();
                 }
             } catch (_) { }
             return;
         }
 
-        // Binary audio — skip empty keep-alive buffers, but update timestamp
-        if (data.length === 0) {
-            return;
-        }
+        if (data.length === 0) return;
 
         lastAudioTime = Date.now();
         const stream = getOrCreateStream();
@@ -152,13 +157,13 @@ wss.on("connection", (ws: WebSocket) => {
             try {
                 stream.write(data);
             } catch (err) {
-                console.error("[Proxy] Error writing to stream:", err);
+                console.error("[Proxy] Write error:", err);
             }
         }
     });
 
     ws.on("close", (code: number, reason: Buffer) => {
-        console.log(`[Proxy] Browser disconnected — code: ${code}, reason: ${reason.toString() || "none"}`);
+        console.log(`[Proxy] Disconnected — code: ${code}, reason: ${reason.toString() || "none"}`);
         stopTimers();
         if (recognizeStream && !recognizeStream.destroyed) recognizeStream.end();
     });
