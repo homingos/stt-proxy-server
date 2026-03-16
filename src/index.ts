@@ -4,7 +4,7 @@ import speech, { protos } from "@google-cloud/speech";
 
 const PORT = Number(process.env.PORT) || 8027;
 
-const STREAMING_CONFIG: protos.google.cloud.speech.v1.IStreamingRecognitionConfig = {
+const DEFAULT_STREAMING_CONFIG: protos.google.cloud.speech.v1.IStreamingRecognitionConfig = {
     config: {
         encoding: "LINEAR16",
         sampleRateHertz: 16000,
@@ -40,8 +40,8 @@ function assignClientId(clientType: "ios" | "roid"): string {
 }
 
 // ─── Helper: create a fresh gRPC recognize stream ──────────────────────────
-function createRecognizeStream(ws: WebSocket, clientId: string) {
-    const stream = speechClient.streamingRecognize(STREAMING_CONFIG);
+function createRecognizeStream(ws: WebSocket, clientId: string, streamingConfig: protos.google.cloud.speech.v1.IStreamingRecognitionConfig) {
+    const stream = speechClient.streamingRecognize(streamingConfig);
 
     stream.on("data", (data: protos.google.cloud.speech.v1.IStreamingRecognizeResponse) => {
         const result = data.results?.[0];
@@ -102,6 +102,9 @@ wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
     // Send the assigned client ID immediately so the client knows its identity
     ws.send(JSON.stringify({ type: "connected", clientId, clientType }));
 
+    // Per-connection streaming config — starts with defaults, client can override via { type: "config", ... }
+    let streamingConfig: protos.google.cloud.speech.v1.IStreamingRecognitionConfig = structuredClone(DEFAULT_STREAMING_CONFIG);
+
     let recognizeStream: ReturnType<typeof createRecognizeStream> | null = null;
     let silenceInterval: NodeJS.Timeout | null = null;
     let streamRestartTimeout: NodeJS.Timeout | null = null;
@@ -112,7 +115,7 @@ wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
 
     function getOrCreateStream() {
         if (!recognizeStream || recognizeStream.destroyed) {
-            recognizeStream = createRecognizeStream(ws, clientId);
+            recognizeStream = createRecognizeStream(ws, clientId, streamingConfig);
 
             // Restart timer for endless streaming
             if (streamRestartTimeout) clearTimeout(streamRestartTimeout);
@@ -162,6 +165,33 @@ wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
         if (!Buffer.isBuffer(data)) {
             try {
                 const msg = JSON.parse(data.toString());
+                if (msg.type === "config") {
+                    // Client sends config to override defaults before or during streaming
+                    // Merge client config into defaults so unset fields keep their defaults
+                    streamingConfig = {
+                        ...DEFAULT_STREAMING_CONFIG,
+                        ...msg.config,
+                        config: {
+                            ...DEFAULT_STREAMING_CONFIG.config,
+                            ...msg.config?.config,
+                        },
+                    };
+                    console.log(`[Proxy][${clientId}] Config updated:`, JSON.stringify(streamingConfig.config));
+
+                    // Restart gRPC stream with new config
+                    if (recognizeStream && !recognizeStream.destroyed) recognizeStream.end();
+                    recognizeStream = null;
+                    if (streamRestartTimeout) {
+                        clearTimeout(streamRestartTimeout);
+                        streamRestartTimeout = null;
+                    }
+                    getOrCreateStream();
+
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: "config_applied", clientId }));
+                    }
+                }
+
                 if (msg.type === "commit") {
                     console.log(`[Proxy][${clientId}] Commit received — flushing gRPC stream`);
                     if (recognizeStream && !recognizeStream.destroyed) recognizeStream.end();
