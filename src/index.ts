@@ -17,34 +17,62 @@ const STREAMING_CONFIG: protos.google.cloud.speech.v1.IStreamingRecognitionConfi
 
 const speechClient = new speech.SpeechClient();
 
+// ─── Client ID tracking ────────────────────────────────────────────────────
+let roidCounter = 0;
+let iosCounter = 0;
+
+function detectClientType(userAgent: string): "ios" | "roid" {
+    const ua = userAgent.toLowerCase();
+    if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ios")) {
+        return "ios";
+    }
+    return "roid";
+}
+
+function assignClientId(clientType: "ios" | "roid"): string {
+    if (clientType === "ios") {
+        iosCounter++;
+        return `ios${String(iosCounter).padStart(3, "0")}`;
+    }
+    roidCounter++;
+    return `roid${String(roidCounter).padStart(3, "0")}`;
+}
+
 // ─── Helper: create a fresh gRPC recognize stream ──────────────────────────
-function createRecognizeStream(ws: WebSocket) {
-    return speechClient
-        .streamingRecognize(STREAMING_CONFIG)
-        .on("data", (data: protos.google.cloud.speech.v1.IStreamingRecognizeResponse) => {
-            const result = data.results?.[0];
-            if (!result) return;
+function createRecognizeStream(ws: WebSocket, clientId: string) {
+    const stream = speechClient.streamingRecognize(STREAMING_CONFIG);
 
-            const transcript = result.alternatives?.[0]?.transcript ?? "";
-            const isFinal = result.isFinal ?? false;
+    stream.on("data", (data: protos.google.cloud.speech.v1.IStreamingRecognizeResponse) => {
+        const result = data.results?.[0];
+        if (!result) return;
 
-            if (!transcript) return;
+        const transcript = result.alternatives?.[0]?.transcript ?? "";
+        const isFinal = result.isFinal ?? false;
 
-            console.log(`[Proxy] Transcript: "${transcript}" (final: ${isFinal})`);
+        if (!transcript) return;
 
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ transcript, isFinal }));
-            }
-        })
-        .on("error", (err: Error) => {
-            console.error("[Proxy] gRPC stream error:", err.message);
-            if (ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({ error: err.message }));
-            }
-        })
-        .on("end", () => {
-            console.log("[Proxy] gRPC stream ended");
-        });
+        console.log(`[gRPC][${clientId}] Transcript: "${transcript}" (final: ${isFinal})`);
+
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ clientId, transcript, isFinal }));
+        }
+    });
+
+    stream.on("error", (err: Error) => {
+        console.error(`[gRPC][${clientId}] gRPC stream error:`, err.message);
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "grpc_status", clientId, status: "error", reason: err.message }));
+        }
+    });
+
+    stream.on("end", () => {
+        console.log(`[gRPC][${clientId}] gRPC stream ended (destroyed: ${stream.destroyed}, writable: ${stream.writable})`);
+        if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "grpc_status", clientId, status: "ended" }));
+        }
+    });
+
+    return stream;
 }
 
 // ─── HTTP & WebSocket Server ────────────────────────────────────────────────
@@ -64,8 +92,14 @@ server.listen(PORT, () => {
     console.log(`[Proxy] Updated Listening on port ${PORT}`);
 });
 
-wss.on("connection", (ws: WebSocket) => {
-    console.log("[Proxy] Browser connected");
+wss.on("connection", (ws: WebSocket, req: http.IncomingMessage) => {
+    const userAgent = req.headers["user-agent"] || "";
+    const clientType = detectClientType(userAgent);
+    const clientId = assignClientId(clientType);
+    console.log(`[Proxy] Client connected — ${clientId} (${clientType}, UA: ${userAgent})`);
+
+    // Send the assigned client ID immediately so the client knows its identity
+    ws.send(JSON.stringify({ type: "connected", clientId, clientType }));
 
     let recognizeStream: ReturnType<typeof createRecognizeStream> | null = null;
     let silenceInterval: NodeJS.Timeout | null = null;
@@ -77,12 +111,12 @@ wss.on("connection", (ws: WebSocket) => {
 
     function getOrCreateStream() {
         if (!recognizeStream || recognizeStream.destroyed) {
-            recognizeStream = createRecognizeStream(ws);
+            recognizeStream = createRecognizeStream(ws, clientId);
 
             // Restart timer for endless streaming
             if (streamRestartTimeout) clearTimeout(streamRestartTimeout);
             streamRestartTimeout = setTimeout(() => {
-                console.log("[Proxy] 290s limit reached. Seamlessly restarting gRPC stream.");
+                console.log(`[Proxy][${clientId}] 290s limit reached. Seamlessly restarting gRPC stream.`);
                 if (recognizeStream && !recognizeStream.destroyed) {
                     recognizeStream.end();
                 }
@@ -128,7 +162,7 @@ wss.on("connection", (ws: WebSocket) => {
             try {
                 const msg = JSON.parse(data.toString());
                 if (msg.type === "commit") {
-                    console.log("[Proxy] Commit received — flushing gRPC stream");
+                    console.log(`[Proxy][${clientId}] Commit received — flushing gRPC stream`);
                     if (recognizeStream && !recognizeStream.destroyed) recognizeStream.end();
                     recognizeStream = null;
                     if (streamRestartTimeout) {
@@ -152,19 +186,19 @@ wss.on("connection", (ws: WebSocket) => {
             try {
                 stream.write(data);
             } catch (err) {
-                console.error("[Proxy] Error writing to stream:", err);
+                console.error(`[Proxy][${clientId}] Error writing to stream:`, err);
             }
         }
     });
 
     ws.on("close", (code: number, reason: Buffer) => {
-        console.log(`[Proxy] Browser disconnected — code: ${code}, reason: ${reason.toString() || "none"}`);
+        console.log(`[Proxy][${clientId}] Client disconnected — code: ${code}, reason: ${reason.toString() || "none"}`);
         stopTimers();
         if (recognizeStream && !recognizeStream.destroyed) recognizeStream.end();
     });
 
     ws.on("error", (err: Error) => {
-        console.error("[Proxy] WebSocket error:", err.message);
+        console.error(`[Proxy][${clientId}] WebSocket error:`, err.message);
         stopTimers();
         if (recognizeStream && !recognizeStream.destroyed) recognizeStream.end();
     });
