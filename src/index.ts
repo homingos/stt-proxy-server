@@ -22,6 +22,7 @@ let roidCounter = 0;
 let iosCounter = 0;
 
 function detectClientType(userAgent: string): "ios" | "roid" {
+    console.log(`[Proxy] Client type : ${userAgent}`);
     const ua = userAgent.toLowerCase();
     if (ua.includes("iphone") || ua.includes("ipad") || ua.includes("ios")) {
         return "ios";
