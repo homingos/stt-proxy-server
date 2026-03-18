@@ -171,9 +171,11 @@ func handleWS(client *speech.Client, w http.ResponseWriter, r *http.Request) {
 		messageType, data, err := ws.ReadMessage()
 		if err != nil {
 			if closeErr, ok := err.(*websocket.CloseError); ok {
-				log.Printf("[Proxy][%s] Client disconnected - code: %d, reason: %s", clientID, closeErr.Code, closeErr.Text)
-			} else {
+				logClose(clientID, closeErr.Code, closeErr.Text)
+			} else if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
 				log.Printf("[Proxy][%s] WebSocket error: %v", clientID, err)
+			} else {
+				log.Printf("[Proxy][%s] Client disconnected", clientID)
 			}
 			return
 		}
@@ -455,6 +457,7 @@ func (c *connState) close() {
 	if cancel != nil {
 		cancel()
 	}
+	_ = c.writeControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 	_ = c.ws.Close()
 }
 
@@ -462,6 +465,12 @@ func (c *connState) sendJSON(msg controlMessage) error {
 	c.writeMu.Lock()
 	defer c.writeMu.Unlock()
 	return c.ws.WriteJSON(msg)
+}
+
+func (c *connState) writeControl(messageType int, data []byte) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.ws.WriteControl(messageType, data, time.Now().Add(2*time.Second))
 }
 
 func detectClientType(userAgent string) string {
@@ -540,4 +549,17 @@ func errorsAreCanceled(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	return strings.Contains(msg, "context canceled") || strings.Contains(msg, "canceled")
+}
+
+func logClose(clientID string, code int, reason string) {
+	switch code {
+	case websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseNoStatusReceived:
+		if reason == "" {
+			log.Printf("[Proxy][%s] Client disconnected", clientID)
+			return
+		}
+		log.Printf("[Proxy][%s] Client disconnected - %s", clientID, reason)
+	default:
+		log.Printf("[Proxy][%s] Client disconnected - code: %d, reason: %s", clientID, code, reason)
+	}
 }
