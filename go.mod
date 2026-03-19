@@ -1,6 +1,6 @@
 module stt-proxy-server
 
-go 1.26
+go 1.24.2
 
 require (
 	cloud.google.com/go/speech v1.28.0
