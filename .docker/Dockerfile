@@ -1,18 +1,28 @@
-FROM node:20-alpine
+ARG GO_VERSION=1.22
 
+FROM golang:${GO_VERSION}-alpine AS builder
+
+RUN apk add --no-cache git
+
+RUN mkdir -p /app
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci
 
-COPY tsconfig.json ./
-COPY src/ ./src/
+COPY go.mod .
+COPY go.sum .
+RUN go mod download
 
-RUN npm install -g typescript && tsc && npm prune --omit=dev
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o ./server ./main.go
+
+FROM alpine:latest
+
+RUN apk add --no-cache ca-certificates
+
+RUN mkdir -p /app
+WORKDIR /app
+COPY --from=builder /app/server .
 
 EXPOSE 8027
-
 ENV PORT=8027
-ENV NODE_ENV=production
-
-CMD ["node", "dist/index.js"]
+CMD ["/app/server"]

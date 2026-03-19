@@ -1,0 +1,786 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>STT Proxy Test</title>
+  <style>
+    :root {
+      --bg: #f5f1e8;
+      --panel: rgba(255, 251, 243, 0.88);
+      --ink: #1d2a35;
+      --muted: #6a7780;
+      --line: rgba(29, 42, 53, 0.14);
+      --accent: #0f7b6c;
+      --accent-2: #d96c47;
+      --ok: #177245;
+      --warn: #9a5b00;
+      --error: #b42318;
+      --shadow: 0 20px 50px rgba(29, 42, 53, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Avenir Next", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(217, 108, 71, 0.18), transparent 35%),
+        radial-gradient(circle at top right, rgba(15, 123, 108, 0.16), transparent 30%),
+        linear-gradient(180deg, #fbf7ef 0%, var(--bg) 100%);
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+
+    .app {
+      width: min(920px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(16px);
+      overflow: hidden;
+    }
+
+    .hero {
+      padding: 28px 28px 18px;
+      border-bottom: 1px solid var(--line);
+      background:
+        linear-gradient(135deg, rgba(15, 123, 108, 0.1), rgba(217, 108, 71, 0.08));
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(28px, 5vw, 46px);
+      line-height: 0.95;
+      letter-spacing: -0.04em;
+    }
+
+    .sub {
+      margin: 12px 0 0;
+      max-width: 60ch;
+      color: var(--muted);
+      font-size: 15px;
+      line-height: 1.5;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 0;
+    }
+
+    .sidebar,
+    .main {
+      padding: 24px 28px 28px;
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.24);
+    }
+
+    .label {
+      display: block;
+      margin: 0 0 8px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    input,
+    select,
+    button,
+    textarea {
+      font: inherit;
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 12px 14px;
+      background: rgba(255, 255, 255, 0.86);
+      color: var(--ink);
+    }
+
+    textarea {
+      min-height: 120px;
+      resize: vertical;
+    }
+
+    .field + .field {
+      margin-top: 16px;
+    }
+
+    .row {
+      display: flex;
+      gap: 12px;
+      margin-top: 18px;
+      flex-wrap: wrap;
+    }
+
+    button {
+      border: 0;
+      border-radius: 999px;
+      padding: 12px 18px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 120ms ease, opacity 120ms ease, background 120ms ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .primary {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .secondary {
+      background: rgba(29, 42, 53, 0.08);
+      color: var(--ink);
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 18px 0 0;
+      padding: 12px 14px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.72);
+      border: 1px solid var(--line);
+      font-size: 14px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--warn);
+      box-shadow: 0 0 0 6px rgba(154, 91, 0, 0.08);
+      flex: 0 0 auto;
+    }
+
+    .status.ok .dot {
+      background: var(--ok);
+      box-shadow: 0 0 0 6px rgba(23, 114, 69, 0.08);
+    }
+
+    .status.error .dot {
+      background: var(--error);
+      box-shadow: 0 0 0 6px rgba(180, 35, 24, 0.08);
+    }
+
+    .transcript {
+      min-height: 320px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(255, 255, 255, 0.68));
+      padding: 22px;
+    }
+
+    .transcript h2,
+    .events h2 {
+      margin: 0 0 14px;
+      font-size: 13px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .final-text {
+      font-size: clamp(22px, 3vw, 34px);
+      line-height: 1.25;
+      letter-spacing: -0.03em;
+      min-height: 120px;
+      white-space: pre-wrap;
+    }
+
+    .interim {
+      margin-top: 14px;
+      font-size: 18px;
+      color: var(--accent-2);
+      min-height: 28px;
+      white-space: pre-wrap;
+    }
+
+    .meta {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .events {
+      margin-top: 20px;
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 18px 22px;
+      background: rgba(255, 255, 255, 0.66);
+    }
+
+    .log {
+      margin: 0;
+      padding-left: 18px;
+      max-height: 220px;
+      overflow: auto;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.55;
+    }
+
+    .hint {
+      margin-top: 18px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .progress-wrap {
+      margin-top: 18px;
+      padding: 14px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .progress-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .progress-bar {
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: rgba(29, 42, 53, 0.08);
+    }
+
+    .progress-fill {
+      width: 0%;
+      height: 100%;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      transition: width 120ms linear;
+    }
+
+    @media (max-width: 860px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .sidebar {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="hero">
+      <h1>Speech Proxy Live Test</h1>
+      <p class="sub">Use your microphone, stream raw PCM audio to the Go WebSocket server, and watch interim and final transcripts appear in real time.</p>
+    </div>
+
+    <div class="grid">
+      <aside class="sidebar">
+        <div class="field">
+          <label class="label" for="wsUrl">WebSocket URL</label>
+          <input id="wsUrl" value="ws://localhost:8027/" />
+        </div>
+
+        <div class="field">
+          <label class="label" for="languageCode">Language Code</label>
+          <input id="languageCode" value="en-IN" />
+        </div>
+
+        <div class="field">
+          <label class="label" for="model">Model</label>
+          <input id="model" value="latest_long" />
+        </div>
+
+        <div class="field">
+          <label class="label" for="sampleRate">Output Sample Rate</label>
+          <select id="sampleRate">
+            <option value="16000" selected>16000 Hz</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label class="label" for="audioFile">Audio File</label>
+          <input id="audioFile" type="file" accept="audio/*" />
+        </div>
+
+        <div class="row">
+          <button id="startBtn" class="primary">Start</button>
+          <button id="fileBtn" class="secondary">Stream File</button>
+          <button id="stopBtn" class="secondary" disabled>Stop</button>
+          <button id="commitBtn" class="secondary" disabled>Commit</button>
+        </div>
+
+        <div id="status" class="status">
+          <span class="dot"></span>
+          <span id="statusText">Idle</span>
+        </div>
+
+        <div class="progress-wrap">
+          <div class="progress-meta">
+            <span id="progressLabel">File progress</span>
+            <strong id="progressValue">0%</strong>
+          </div>
+          <div class="progress-bar">
+            <div id="progressFill" class="progress-fill"></div>
+          </div>
+        </div>
+
+        <p class="hint">
+          Open this page on `http://localhost` if the browser blocks microphone access from `file://`.
+        </p>
+      </aside>
+
+      <main class="main">
+        <section class="transcript">
+          <h2>Transcript</h2>
+          <div id="finalText" class="final-text"></div>
+          <div id="interimText" class="interim"></div>
+          <div class="meta">
+            <div>Client: <strong id="clientId">-</strong></div>
+            <div>Type: <strong id="clientType">-</strong></div>
+          </div>
+        </section>
+
+        <section class="events">
+          <h2>Events</h2>
+          <ol id="log" class="log"></ol>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    const wsUrlInput = document.getElementById("wsUrl");
+    const languageCodeInput = document.getElementById("languageCode");
+    const modelInput = document.getElementById("model");
+    const sampleRateSelect = document.getElementById("sampleRate");
+    const audioFileInput = document.getElementById("audioFile");
+    const startBtn = document.getElementById("startBtn");
+    const fileBtn = document.getElementById("fileBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const commitBtn = document.getElementById("commitBtn");
+    const statusEl = document.getElementById("status");
+    const statusTextEl = document.getElementById("statusText");
+    const progressLabelEl = document.getElementById("progressLabel");
+    const progressValueEl = document.getElementById("progressValue");
+    const progressFillEl = document.getElementById("progressFill");
+    const finalTextEl = document.getElementById("finalText");
+    const interimTextEl = document.getElementById("interimText");
+    const clientIdEl = document.getElementById("clientId");
+    const clientTypeEl = document.getElementById("clientType");
+    const logEl = document.getElementById("log");
+
+    let ws = null;
+    let audioContext = null;
+    let mediaStream = null;
+    let sourceNode = null;
+    let processorNode = null;
+    let isStopping = false;
+    let fileStreamAbort = null;
+
+    function setFileProgress(value, label) {
+      const percent = Math.max(0, Math.min(100, value));
+      progressFillEl.style.width = percent + "%";
+      progressValueEl.textContent = Math.round(percent) + "%";
+      progressLabelEl.textContent = label || "File progress";
+    }
+
+    function setStatus(text, kind) {
+      statusTextEl.textContent = text;
+      statusEl.className = "status" + (kind ? " " + kind : "");
+    }
+
+    function addLog(message) {
+      const item = document.createElement("li");
+      item.textContent = "[" + new Date().toLocaleTimeString() + "] " + message;
+      logEl.prepend(item);
+    }
+
+    function appendFinalTranscript(text) {
+      finalTextEl.textContent = (finalTextEl.textContent + " " + text).trim();
+      interimTextEl.textContent = "";
+    }
+
+    function downsampleBuffer(channelData, inputRate, outputRate) {
+      if (outputRate === inputRate) {
+        return channelData;
+      }
+
+      const sampleRateRatio = inputRate / outputRate;
+      const newLength = Math.round(channelData.length / sampleRateRatio);
+      const result = new Float32Array(newLength);
+      let offsetResult = 0;
+      let offsetBuffer = 0;
+
+      while (offsetResult < result.length) {
+        const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
+        let accum = 0;
+        let count = 0;
+
+        for (let i = offsetBuffer; i < nextOffsetBuffer && i < channelData.length; i += 1) {
+          accum += channelData[i];
+          count += 1;
+        }
+
+        result[offsetResult] = count > 0 ? accum / count : 0;
+        offsetResult += 1;
+        offsetBuffer = nextOffsetBuffer;
+      }
+
+      return result;
+    }
+
+    function floatTo16BitPCM(float32Data) {
+      const buffer = new ArrayBuffer(float32Data.length * 2);
+      const view = new DataView(buffer);
+
+      for (let i = 0; i < float32Data.length; i += 1) {
+        let sample = Math.max(-1, Math.min(1, float32Data[i]));
+        sample = sample < 0 ? sample * 0x8000 : sample * 0x7fff;
+        view.setInt16(i * 2, sample, true);
+      }
+
+      return buffer;
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function connectWebSocket() {
+      if (ws) {
+        return;
+      }
+
+      const wsUrl = wsUrlInput.value.trim();
+      setStatus("Connecting...", "");
+      addLog("Connecting to " + wsUrl);
+
+      await new Promise((resolve, reject) => {
+        ws = new WebSocket(wsUrl);
+        ws.binaryType = "arraybuffer";
+
+        ws.onopen = () => {
+          addLog("WebSocket connected");
+          resolve();
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+
+            if (data.type === "connected") {
+              clientIdEl.textContent = data.clientId || "-";
+              clientTypeEl.textContent = data.clientType || "-";
+              addLog("Assigned " + (data.clientId || "unknown client"));
+              return;
+            }
+
+            if (data.type === "config_applied") {
+              addLog("Config applied");
+              return;
+            }
+
+            if (data.type === "grpc_status") {
+              addLog("gRPC status: " + data.status + (data.reason ? " - " + data.reason : ""));
+              if (data.status === "error") {
+                setStatus("gRPC error", "error");
+              }
+              return;
+            }
+
+            if (data.transcript) {
+              if (data.isFinal) {
+                appendFinalTranscript(data.transcript);
+                addLog("Final transcript: " + data.transcript);
+              } else {
+                interimTextEl.textContent = data.transcript;
+              }
+            }
+          } catch (error) {
+            addLog("Non-JSON message received");
+          }
+        };
+
+        ws.onerror = () => {
+          setStatus("WebSocket error", "error");
+          reject(new Error("WebSocket error"));
+        };
+
+        ws.onclose = () => {
+          addLog("WebSocket closed");
+          if (!isStopping) {
+            setStatus("Disconnected", "error");
+          }
+          cleanupAudio();
+          ws = null;
+          startBtn.disabled = false;
+          fileBtn.disabled = false;
+          stopBtn.disabled = true;
+          commitBtn.disabled = true;
+        };
+      });
+    }
+
+    function sendConfig(sampleRate) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        throw new Error("WebSocket is not open");
+      }
+
+      ws.send(JSON.stringify({
+        type: "config",
+        config: {
+          interimResults: true,
+          config: {
+            encoding: "LINEAR16",
+            sampleRateHertz: sampleRate,
+            languageCode: languageCodeInput.value.trim(),
+            model: modelInput.value.trim(),
+            enableAutomaticPunctuation: false
+          }
+        }
+      }));
+    }
+
+    async function decodeAudioFile(file, outputRate) {
+      const fileBuffer = await file.arrayBuffer();
+      const context = new (window.AudioContext || window.webkitAudioContext)();
+
+      try {
+        const decoded = await context.decodeAudioData(fileBuffer.slice(0));
+        const input = decoded.getChannelData(0);
+        return downsampleBuffer(input, decoded.sampleRate, outputRate);
+      } finally {
+        await context.close();
+      }
+    }
+
+    async function streamAudioSamples(samples, outputRate, signal) {
+      const chunkSamples = Math.max(1, Math.floor(outputRate / 10));
+
+      for (let offset = 0; offset < samples.length; offset += chunkSamples) {
+        if (signal.aborted) {
+          return;
+        }
+        if (!ws || ws.readyState !== WebSocket.OPEN) {
+          throw new Error("WebSocket closed while streaming file");
+        }
+
+        const chunk = samples.subarray(offset, Math.min(offset + chunkSamples, samples.length));
+        ws.send(floatTo16BitPCM(chunk));
+        setFileProgress(((offset + chunk.length) / samples.length) * 100, "Streaming file");
+        await sleep((chunk.length / outputRate) * 1000);
+      }
+    }
+
+    async function startStreaming() {
+      if (ws || audioContext) {
+        return;
+      }
+
+      isStopping = false;
+      finalTextEl.textContent = "";
+      interimTextEl.textContent = "";
+      clientIdEl.textContent = "-";
+      clientTypeEl.textContent = "-";
+      logEl.innerHTML = "";
+      setFileProgress(0, "Microphone mode");
+
+      const sampleRate = Number(sampleRateSelect.value);
+      try {
+        await connectWebSocket();
+        setStatus("Connected. Requesting microphone...", "ok");
+        sendConfig(sampleRate);
+
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        sourceNode = audioContext.createMediaStreamSource(mediaStream);
+        processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+
+        processorNode.onaudioprocess = (event) => {
+          if (!ws || ws.readyState !== WebSocket.OPEN) {
+            return;
+          }
+
+          const input = event.inputBuffer.getChannelData(0);
+          const downsampled = downsampleBuffer(input, audioContext.sampleRate, sampleRate);
+          ws.send(floatTo16BitPCM(downsampled));
+        };
+
+        sourceNode.connect(processorNode);
+        processorNode.connect(audioContext.destination);
+
+        setStatus("Listening...", "ok");
+        addLog("Microphone streaming started");
+        startBtn.disabled = true;
+        fileBtn.disabled = true;
+        stopBtn.disabled = false;
+        commitBtn.disabled = false;
+      } catch (error) {
+        addLog("Failed to start microphone: " + error.message);
+        setStatus("Microphone failed", "error");
+        stopStreaming();
+      }
+    }
+
+    async function startFileStreaming() {
+      const file = audioFileInput.files && audioFileInput.files[0];
+      if (!file) {
+        setStatus("Choose an audio file first", "error");
+        addLog("No audio file selected");
+        return;
+      }
+      if (ws || audioContext) {
+        return;
+      }
+
+      isStopping = false;
+      finalTextEl.textContent = "";
+      interimTextEl.textContent = "";
+      clientIdEl.textContent = "-";
+      clientTypeEl.textContent = "-";
+      logEl.innerHTML = "";
+      setFileProgress(0, "Preparing file");
+
+      const sampleRate = Number(sampleRateSelect.value);
+
+      try {
+        setStatus("Preparing file...", "");
+        addLog("Decoding " + file.name);
+        const samples = await decodeAudioFile(file, sampleRate);
+        setFileProgress(5, "Connecting");
+        await connectWebSocket();
+        sendConfig(sampleRate);
+
+        fileStreamAbort = new AbortController();
+        startBtn.disabled = true;
+        fileBtn.disabled = true;
+        stopBtn.disabled = false;
+        commitBtn.disabled = false;
+        setStatus("Streaming file...", "ok");
+        addLog("File streaming started");
+
+        await streamAudioSamples(samples, sampleRate, fileStreamAbort.signal);
+
+        if (!fileStreamAbort.signal.aborted) {
+          addLog("File streaming completed");
+          setFileProgress(100, "File sent");
+          commitStream();
+          setStatus("File sent", "ok");
+        }
+      } catch (error) {
+        addLog("File streaming failed: " + error.message);
+        setStatus("File streaming failed", "error");
+      }
+    }
+
+    function cleanupAudio() {
+      if (processorNode) {
+        processorNode.disconnect();
+        processorNode.onaudioprocess = null;
+        processorNode = null;
+      }
+
+      if (sourceNode) {
+        sourceNode.disconnect();
+        sourceNode = null;
+      }
+
+      if (mediaStream) {
+        mediaStream.getTracks().forEach((track) => track.stop());
+        mediaStream = null;
+      }
+
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
+      }
+    }
+
+    function stopStreaming() {
+      isStopping = true;
+      if (fileStreamAbort) {
+        fileStreamAbort.abort();
+        fileStreamAbort = null;
+      }
+      cleanupAudio();
+
+      if (ws) {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
+        ws = null;
+      }
+
+      startBtn.disabled = false;
+      fileBtn.disabled = false;
+      stopBtn.disabled = true;
+      commitBtn.disabled = true;
+      if (!fileStreamAbort) {
+        setFileProgress(0, "File progress");
+      }
+      setStatus("Stopped", "");
+      addLog("Streaming stopped");
+    }
+
+    function commitStream() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        return;
+      }
+      ws.send(JSON.stringify({ type: "commit" }));
+      addLog("Commit sent");
+    }
+
+    startBtn.addEventListener("click", startStreaming);
+    fileBtn.addEventListener("click", startFileStreaming);
+    stopBtn.addEventListener("click", stopStreaming);
+    commitBtn.addEventListener("click", commitStream);
+
+    if (location.protocol.startsWith("http")) {
+      wsUrlInput.value = (location.protocol === "https:" ? "wss://" : "ws://") + location.hostname + ":8027/";
+    }
+  </script>
+</body>
+</html>
