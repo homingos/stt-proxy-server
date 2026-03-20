@@ -218,17 +218,6 @@ func (c *connState) handleText(data []byte) {
 			Type:     "config_applied",
 			ClientID: c.clientID,
 		})
-	case "commit":
-		log.Printf("[Proxy][%s] Commit received - flushing gRPC stream", c.clientID)
-		if err := c.restartStream(); err != nil {
-			log.Printf("[Proxy][%s] restart after commit: %v", c.clientID, err)
-			_ = c.sendJSON(controlMessage{
-				Type:     "grpc_status",
-				ClientID: c.clientID,
-				Status:   "error",
-				Reason:   err.Error(),
-			})
-		}
 	}
 }
 
